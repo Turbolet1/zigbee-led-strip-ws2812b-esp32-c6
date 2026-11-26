@@ -34,6 +34,7 @@
 #define NUM_LEDS             97
 #define LED_CHIPSET          WS2811
 #define LED_COLOR_ORDER      GRB
+#define STATUS_LED_PIN       8             // onboard addressable RGB LED on common ESP32-C6 Mini boards
 #define MAX_MILLIAMPS        1600          // safety cap; tune to your PSU
 
 #define ZB_ENDPOINT          10
@@ -49,6 +50,9 @@
 
 // ---------- Globals ----------
 CRGB                       leds[NUM_LEDS];
+CRGB                       statusLed[1];
+static uint32_t            last_status_ms = 0;
+static bool                status_blink_on = false;
 Preferences                prefs;
 ZigbeeColorDimmableLight   zbColorLight(ZB_ENDPOINT);
 
@@ -77,6 +81,23 @@ static bool       identify_active     = false;
 static uint32_t btn_pressed_at_ms = 0;
 static bool     btn_was_down      = false;
 static bool     reset_triggered   = false;
+
+// ---------- Status LED ----------
+// Blue blinking = waiting to join a Zigbee network (pairing).
+// Solid green = successfully joined the Zigbee network.
+static void updateStatusLed(uint32_t now) {
+  const bool connected = Zigbee.connected();
+  if (connected) {
+    statusLed[0] = CRGB(0, 48, 0);          // dim green
+  } else {
+    if (now - last_status_ms >= 500) {
+      last_status_ms = now;
+      status_blink_on = !status_blink_on;
+    }
+    statusLed[0] = status_blink_on ? CRGB(0, 0, 48) : CRGB::Black; // blue blink
+  }
+  FastLED.show(); // updates both the strip and the onboard status pixel
+}
 
 // ---------- Helpers ----------
 static inline void computeFinalRgb(const LightState &s, uint8_t &fr, uint8_t &fg, uint8_t &fb) {
@@ -236,6 +257,8 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   FastLED.addLeds<LED_CHIPSET, LED_PIN, LED_COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.addLeds<WS2812B, STATUS_LED_PIN, GRB>(statusLed, 1);
+  statusLed[0] = CRGB::Black;
   FastLED.setMaxPowerInVoltsAndMilliamps(5, MAX_MILLIAMPS);
   FastLED.clear(true);
 
@@ -273,6 +296,8 @@ void setup() {
   Serial.println("Starting Zigbee as ROUTER...");
   if (!Zigbee.begin(&cfg)) {
     Serial.println("Zigbee start failed - rebooting in 1s");
+    statusLed[0] = CRGB::Red;
+    FastLED.show();
     delay(1000);
     ESP.restart();
   }
@@ -282,6 +307,7 @@ void setup() {
   while (!Zigbee.connected() && millis() - t0 < 60000) {
     Serial.print('.');
     checkButton(millis());        // allow factory reset while joining
+    updateStatusLed(millis());    // blue blink while waiting to join
     delay(100);
   }
   Serial.println();
@@ -296,6 +322,7 @@ void loop() {
   uint32_t now = millis();
 
   checkButton(now);
+  updateStatusLed(now);           // blue blink = pairing; green = connected
 
   if (now - last_frame_ms >= FRAME_INTERVAL_MS) {
     last_frame_ms = now;
